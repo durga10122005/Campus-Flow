@@ -6,15 +6,23 @@ import {
   ScrollView,
   TouchableOpacity,
   Platform,
+  DimensionValue,
 } from 'react-native';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useApp } from '../context/AppContext';
+import {
+  useRealtimeClock,
+  getSlotRealtimeStatus,
+  formatMinutesToDisplay,
+  parseTimeToMinutes,
+} from '../utils/timeUtils';
 
 export const TodayScreen: React.FC = () => {
   const {
     courses,
     timetable,
+    profile,
     morningBriefDismissed,
     dismissMorningBrief,
     markAttendance,
@@ -22,8 +30,93 @@ export const TodayScreen: React.FC = () => {
     showToast,
   } = useApp();
 
-  // Find active slot or default to the second slot (Operating Systems Lab)
-  const activeSlot = timetable.find(s => s.status === 'active') || timetable[1];
+  const { now, currentMinutes, currentWeekday } = useRealtimeClock(5000);
+
+  // 1. Get today's real classes sorted by start time
+  const todaySlots = timetable
+    .filter(s => s.day === currentWeekday)
+    .sort((a, b) => parseTimeToMinutes(a.startTime) - parseTimeToMinutes(b.startTime));
+
+  // Fallback to primary timetable slots if today is an unconfigured off-day / Sunday
+  const displaySlots = todaySlots.length > 0 ? todaySlots : timetable.slice(0, 4);
+
+  // 2. Identify active ongoing class or next upcoming class for today
+  const activeSlot =
+    todaySlots.find(
+      s => getSlotRealtimeStatus(s, currentWeekday, currentMinutes).state === 'active'
+    ) ||
+    todaySlots.find(
+      s => getSlotRealtimeStatus(s, currentWeekday, currentMinutes).state === 'upcoming'
+    ) ||
+    (todaySlots.length > 0 ? todaySlots[0] : timetable[1]);
+
+  const nextSlot =
+    todaySlots.find(
+      s =>
+        s.id !== activeSlot?.id &&
+        getSlotRealtimeStatus(s, currentWeekday, currentMinutes).state === 'upcoming'
+    ) ||
+    (todaySlots.length > 1 ? todaySlots[1] : timetable[2]);
+
+  // 3. Real-time active slot calculations
+  const activeStatus = activeSlot
+    ? getSlotRealtimeStatus(activeSlot, currentWeekday, currentMinutes)
+    : null;
+
+  const isLiveNow = activeStatus?.state === 'active';
+  const isEnded = activeStatus?.state === 'ended';
+
+  let progressPct = 0;
+  let elapsedText = '0m elapsed';
+  let remainingText = `${activeSlot?.durationMinutes || 90}m remaining`;
+
+  if (isLiveNow && activeStatus) {
+    progressPct = activeStatus.progressPercent;
+    elapsedText = `${activeStatus.elapsedMinutes}m elapsed`;
+    remainingText = `${activeStatus.remainingMinutes}m remaining`;
+  } else if (isEnded && activeStatus) {
+    progressPct = 100;
+    elapsedText = `Completed (${activeStatus.totalDurationMinutes}m)`;
+    remainingText = `Ended at ${activeSlot?.endTime}`;
+  } else if (activeStatus?.state === 'upcoming' && activeSlot) {
+    progressPct = 0;
+    elapsedText = `Starts at ${activeSlot.startTime}`;
+    remainingText = `in ${formatMinutesToDisplay(activeStatus.startsInMinutes)}`;
+  } else {
+    progressPct = 64.4;
+    elapsedText = '58m elapsed';
+    remainingText = '32m remaining';
+  }
+
+  // 4. Next Up countdown calculation
+  const nextStatus = nextSlot
+    ? getSlotRealtimeStatus(nextSlot, currentWeekday, currentMinutes)
+    : null;
+
+  const nextInText =
+    nextStatus && nextStatus.state === 'upcoming'
+      ? `in ${formatMinutesToDisplay(nextStatus.startsInMinutes)}`
+      : 'in 15m';
+
+  // 5. Semester week calculation based on current date
+  const semesterStart = new Date(now.getFullYear(), 7, 1); // August
+  const academicWeek = Math.max(1, Math.min(16, Math.floor((now.getTime() - semesterStart.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1));
+
+  // 6. Find course with lowest compliance for dynamic morning brief alert
+  const targetRule = profile.targetRule;
+  const lowestCourse = courses.reduce((prev, curr) => {
+    const prevPct = prev.total > 0 ? (prev.attended / prev.total) * 100 : 100;
+    const currPct = curr.total > 0 ? (curr.attended / curr.total) * 100 : 100;
+    return currPct < prevPct ? curr : prev;
+  }, courses[0]);
+
+  const lowestPct = lowestCourse && lowestCourse.total > 0
+    ? ((lowestCourse.attended / lowestCourse.total) * 100).toFixed(1)
+    : '68.0';
+
+  const neededClasses = lowestCourse
+    ? Math.max(0, Math.ceil(((targetRule / 100) * lowestCourse.total - lowestCourse.attended) / (1 - targetRule / 100)))
+    : 5;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} showsVerticalScrollIndicator={false}>
@@ -37,10 +130,15 @@ export const TodayScreen: React.FC = () => {
             <View style={styles.briefHeaderRow}>
               <Text style={styles.briefSubhead}>MORNING BRIEF • 8:00 AM</Text>
               <View style={styles.briefDot} />
-              <Text style={styles.briefClasses}>4 classes</Text>
+              <Text style={styles.briefClasses}>{displaySlots.length} classes</Text>
             </View>
             <Text style={styles.briefMessage}>
-              <Text style={styles.briefBold}>Chem 201 at 68.0%</Text> — Shortage risk. Attend next 5 classes to restore compliance.
+              <Text style={styles.briefBold}>
+                {lowestCourse ? `${lowestCourse.title.split(' ')[0]} ${lowestCourse.code.replace(/\D/g, '') || '201'} at ${lowestPct}%` : 'Chem 201 at 68.0%'}
+              </Text>
+              {Number(lowestPct) < targetRule
+                ? ` — Shortage risk. Attend next ${neededClasses || 5} classes to restore compliance.`
+                : ' — Attendance in safe zone. Keep up the momentum!'}
             </Text>
           </View>
           <TouchableOpacity
@@ -62,10 +160,12 @@ export const TodayScreen: React.FC = () => {
         <View style={styles.heroHeaderRow}>
           <View style={styles.liveIndicatorBadge}>
             <View style={styles.pulseDot} />
-            <Text style={styles.liveText}>LIVE • 10:15 - 11:45 AM</Text>
+            <Text style={styles.liveText}>
+              {isLiveNow ? 'LIVE' : isEnded ? 'ENDED' : 'NEXT'} • {activeSlot ? `${activeSlot.startTime} - ${activeSlot.endTime}` : '10:15 - 11:45 AM'}
+            </Text>
           </View>
           <View style={styles.weekBadge}>
-            <Text style={styles.weekText}>Week 8</Text>
+            <Text style={styles.weekText}>Week {academicWeek}</Text>
           </View>
         </View>
 
@@ -73,9 +173,11 @@ export const TodayScreen: React.FC = () => {
         <View style={styles.courseMeta}>
           <View style={styles.courseTitleRow}>
             <Text style={styles.courseTitle}>{activeSlot?.courseTitle || 'Operating Systems Lab'}</Text>
-            <View style={styles.creditChip}>
-              <Text style={styles.creditChipText}>Lab Credit 2×</Text>
-            </View>
+            {activeSlot?.isLab && (
+              <View style={styles.creditChip}>
+                <Text style={styles.creditChipText}>Lab Credit 2×</Text>
+              </View>
+            )}
           </View>
 
           <View style={styles.detailsRow}>
@@ -96,11 +198,16 @@ export const TodayScreen: React.FC = () => {
         {/* Segmented Progress Bar */}
         <View style={styles.progressSection}>
           <View style={styles.progressBarTrack}>
-            <View style={[styles.progressBarFill, { width: '64.4%' }]} />
+            <View
+              style={[
+                styles.progressBarFill,
+                { width: `${progressPct.toFixed(1)}%` as DimensionValue },
+              ]}
+            />
           </View>
           <View style={styles.progressLabels}>
-            <Text style={styles.elapsedText}>58m elapsed</Text>
-            <Text style={styles.remainingText}>32m remaining</Text>
+            <Text style={styles.elapsedText}>{elapsedText}</Text>
+            <Text style={styles.remainingText}>{remainingText}</Text>
           </View>
         </View>
 
@@ -114,7 +221,7 @@ export const TodayScreen: React.FC = () => {
                 styles.btnPresent,
                 activeSlot?.status === 'attended' && styles.actionBtnSelected,
               ]}
-              onPress={() => markAttendance(activeSlot.id, 'present')}
+              onPress={() => activeSlot && markAttendance(activeSlot.id, 'present')}
               activeOpacity={0.8}
             >
               <MaterialIcons name="check-circle" size={18} color={Colors.onPrimary} />
@@ -127,7 +234,7 @@ export const TodayScreen: React.FC = () => {
                 styles.btnAbsent,
                 activeSlot?.status === 'missed' && styles.actionBtnSelected,
               ]}
-              onPress={() => markAttendance(activeSlot.id, 'absent')}
+              onPress={() => activeSlot && markAttendance(activeSlot.id, 'absent')}
               activeOpacity={0.8}
             >
               <MaterialIcons name="cancel" size={18} color={Colors.onErrorContainer} />
@@ -140,7 +247,7 @@ export const TodayScreen: React.FC = () => {
                 styles.btnCancelled,
                 activeSlot?.status === 'cancelled' && styles.actionBtnSelected,
               ]}
-              onPress={() => markAttendance(activeSlot.id, 'cancelled')}
+              onPress={() => activeSlot && markAttendance(activeSlot.id, 'cancelled')}
               activeOpacity={0.8}
             >
               <MaterialIcons name="block" size={18} color={Colors.secondary} />
@@ -157,23 +264,27 @@ export const TodayScreen: React.FC = () => {
             <MaterialIcons name="directions-walk" size={20} color={Colors.onSecondaryFixed} />
           </View>
           <View style={styles.nextUpInfo}>
-            <Text style={styles.nextUpLabel}>NEXT UP • 12:00 PM</Text>
-            <Text style={styles.nextUpTitle}>Database Systems</Text>
+            <Text style={styles.nextUpLabel}>
+              NEXT UP • {nextSlot ? nextSlot.startTime : '12:00 PM'}
+            </Text>
+            <Text style={styles.nextUpTitle}>
+              {nextSlot ? nextSlot.courseTitle : 'Database Systems'}
+            </Text>
             <View style={styles.nextUpSub}>
-              <Text style={styles.roomSub}>LEC HALL 2</Text>
+              <Text style={styles.roomSub}>{nextSlot ? nextSlot.room : 'LEC HALL 2'}</Text>
               <Text style={styles.dotSub}>•</Text>
-              <Text style={styles.profSub}>Prof. Thorne</Text>
+              <Text style={styles.profSub}>{nextSlot ? nextSlot.professor : 'Prof. Thorne'}</Text>
             </View>
           </View>
         </View>
 
         <View style={styles.nextUpRight}>
           <View style={styles.inTimeBadge}>
-            <Text style={styles.inTimeText}>in 15m</Text>
+            <Text style={styles.inTimeText}>{nextInText}</Text>
           </View>
           <TouchableOpacity
             style={styles.directionsBtn}
-            onPress={() => showToast('Opening campus navigation map to Central Wing', 'info')}
+            onPress={() => showToast(`Walking directions to ${nextSlot ? nextSlot.room : 'LEC HALL 2'}`, 'info')}
             activeOpacity={0.7}
           >
             <Text style={styles.directionsText}>Directions</Text>
@@ -203,10 +314,11 @@ export const TodayScreen: React.FC = () => {
         >
           {courses.map(course => {
             const percentage = ((course.attended / course.total) * 100).toFixed(1);
-            const isSafe = Number(percentage) >= 75;
-            const isCritical = Number(percentage) < 70;
-            const safeBunks = Math.max(0, Math.floor((course.attended - 0.75 * course.total) / 0.75));
-            const neededClasses = Math.max(0, Math.ceil((0.75 * course.total - course.attended) / (1 - 0.75)));
+            const isSafe = Number(percentage) >= targetRule;
+            const isCritical = Number(percentage) < targetRule - 5;
+            const targetDec = targetRule / 100;
+            const safeBunks = Math.max(0, Math.floor((course.attended - targetDec * course.total) / targetDec));
+            const neededClasses = Math.max(0, Math.ceil((targetDec * course.total - course.attended) / (1 - targetDec)));
 
             return (
               <View key={course.id} style={styles.carouselCard}>
@@ -288,8 +400,8 @@ export const TodayScreen: React.FC = () => {
                         },
                       ]}
                     />
-                    {/* 75% target threshold tick */}
-                    <View style={styles.targetTick} />
+                    {/* Dynamic compliance target tick */}
+                    <View style={[styles.targetTick, { left: `${targetRule}%` as DimensionValue }]} />
                   </View>
 
                   <View
@@ -312,7 +424,7 @@ export const TodayScreen: React.FC = () => {
                       ]}
                     >
                       {isCritical
-                        ? `Attend next ${neededClasses} classes for 75%`
+                        ? `Attend next ${neededClasses} classes for ${targetRule}%`
                         : `Safely bunk next ${safeBunks} classes`}
                     </Text>
                   </View>
@@ -338,53 +450,51 @@ export const TodayScreen: React.FC = () => {
         </View>
 
         <View style={styles.timelineList}>
-          {timetable.map(slot => (
-            <View key={slot.id} style={styles.slotCard}>
-              <View style={styles.slotTimeCol}>
-                <Text style={styles.slotStartTime}>{slot.startTime.split(' ')[0]}</Text>
-                <Text style={styles.slotEndTime}>{slot.endTime}</Text>
-              </View>
+          {displaySlots.map(slot => {
+            const slotStatus = getSlotRealtimeStatus(slot, currentWeekday, currentMinutes);
+            const isSlotActive = slotStatus.state === 'active';
+            const isSlotEnded = slotStatus.state === 'ended';
 
-              <View style={styles.slotContentCol}>
-                <View style={styles.slotTopRow}>
-                  <Text style={styles.slotTitle} numberOfLines={1}>{slot.courseTitle}</Text>
-                  <View
-                    style={[
-                      styles.slotStatusBadge,
-                      slot.status === 'attended'
-                        ? styles.slotAttendedBadge
-                        : slot.status === 'active'
-                        ? styles.slotActiveBadge
-                        : styles.slotUpcomingBadge,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.slotStatusText,
-                        slot.status === 'attended'
-                          ? { color: Colors.primary }
-                          : slot.status === 'active'
-                          ? { color: Colors.primaryContainer }
-                          : { color: Colors.secondary },
-                      ]}
-                    >
-                      {slot.status === 'attended'
-                        ? 'Attended'
-                        : slot.status === 'active'
-                        ? 'Now'
-                        : 'Upcoming'}
+            return (
+              <View key={slot.id} style={styles.slotCard}>
+                <View style={styles.slotTimeCol}>
+                  <Text style={styles.slotStartTime}>{slot.startTime.split(' ')[0]}</Text>
+                  <Text style={styles.slotEndTime}>{slot.endTime}</Text>
+                </View>
+
+                <View style={styles.slotContentCol}>
+                  <View style={styles.slotTopRow}>
+                    <Text style={styles.slotTitle} numberOfLines={1}>{slot.courseTitle}</Text>
+                    {slot.status === 'attended' ? (
+                      <View style={styles.attendedTag}>
+                        <MaterialIcons name="check" size={12} color={Colors.primary} />
+                        <Text style={styles.attendedTagText}>Attended</Text>
+                      </View>
+                    ) : isSlotActive ? (
+                      <View style={styles.activeTag}>
+                        <Text style={styles.activeTagText}>Active</Text>
+                      </View>
+                    ) : isSlotEnded ? (
+                      <View style={styles.endedTag}>
+                        <Text style={styles.endedTagText}>Ended</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.upcomingTag}>
+                        <Text style={styles.upcomingTagText}>Upcoming</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.slotBottomRow}>
+                    <Text style={styles.slotSubText}>
+                      {slot.courseCode} • Room {slot.room} • {slot.professor}
                     </Text>
+                    <Text style={styles.slotLocationText}>{slot.location}</Text>
                   </View>
                 </View>
-
-                <View style={styles.slotMetaRow}>
-                  <Text style={styles.slotRoom}>{slot.room}</Text>
-                  <Text style={styles.slotDot}>•</Text>
-                  <Text style={styles.slotProf}>{slot.professor}</Text>
-                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </View>
       </View>
     </ScrollView>
@@ -401,86 +511,63 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     gap: 16,
   },
-
-  // 1. Morning brief
   morningBriefCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#fff7ed',
-    borderRadius: 14,
+    backgroundColor: Colors.tertiaryFixed,
+    borderRadius: 12,
     padding: 12,
-    borderWidth: 1,
-    borderColor: '#fed7aa',
+    gap: 10,
   },
   warningIconBox: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: Colors.tertiaryFixed,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginTop: 2,
   },
   briefContent: {
     flex: 1,
+    gap: 4,
   },
   briefHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginBottom: 2,
   },
   briefSubhead: {
     fontSize: 10,
-    fontWeight: '700',
-    color: Colors.tertiary,
+    fontWeight: '800',
+    color: Colors.onTertiaryFixedVariant,
     letterSpacing: 0.5,
   },
   briefDot: {
     width: 3,
     height: 3,
     borderRadius: 1.5,
-    backgroundColor: Colors.outlineVariant,
+    backgroundColor: Colors.onTertiaryFixedVariant,
   },
   briefClasses: {
     fontSize: 10,
     fontWeight: '600',
-    color: Colors.secondary,
+    color: Colors.onTertiaryFixedVariant,
   },
   briefMessage: {
     fontSize: 12,
-    color: Colors.onSurface,
+    color: Colors.onTertiaryFixed,
     lineHeight: 16,
   },
   briefBold: {
     fontWeight: '700',
-    color: Colors.tertiary,
   },
   dismissBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 2,
   },
-
-  // 2. Primary Hero Widget
   heroCard: {
     backgroundColor: Colors.surfaceContainerLowest,
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
     borderColor: Colors.divider,
+    gap: 14,
     position: 'relative',
     overflow: 'hidden',
-    gap: 14,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
   },
   accentBar: {
     position: 'absolute',
@@ -494,74 +581,69 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 4,
   },
   liveIndicatorBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: Colors.surfaceContainerLow,
-    paddingHorizontal: 10,
+    backgroundColor: Colors.primaryContainer,
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 20,
+    borderRadius: 6,
   },
   pulseDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: Colors.primary,
   },
   liveText: {
     fontSize: 10,
-    fontWeight: '700',
-    color: Colors.primary,
+    fontWeight: '800',
+    color: Colors.onPrimaryContainer,
     letterSpacing: 0.5,
   },
   weekBadge: {
-    backgroundColor: Colors.surfaceContainer,
+    backgroundColor: Colors.surfaceContainerLow,
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 4,
     borderRadius: 6,
   },
   weekText: {
     fontSize: 10,
-    fontWeight: '600',
-    color: Colors.onSurfaceVariant,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontWeight: '700',
+    color: Colors.secondary,
   },
   courseMeta: {
-    gap: 4,
+    gap: 6,
   },
   courseTitleRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
+    alignItems: 'center',
     gap: 8,
   },
   courseTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     color: Colors.onSurface,
-    letterSpacing: -0.3,
     flex: 1,
   },
   creditChip: {
-    backgroundColor: 'rgba(133, 248, 196, 0.4)',
-    paddingHorizontal: 8,
+    backgroundColor: Colors.primaryContainer,
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 12,
+    borderRadius: 4,
   },
   creditChipText: {
     fontSize: 10,
     fontWeight: '700',
-    color: Colors.onPrimaryFixedVariant,
+    color: Colors.onPrimaryContainer,
   },
   detailsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 6,
-    marginTop: 4,
   },
   roomTag: {
     flexDirection: 'row',
@@ -573,35 +655,32 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   roomText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
     color: Colors.onSurface,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   metaDivider: {
-    fontSize: 12,
-    color: Colors.outlineVariant,
+    fontSize: 11,
+    color: Colors.outline,
   },
   profRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
   },
   metaText: {
-    fontSize: 12,
-    color: Colors.onSurfaceVariant,
+    fontSize: 11,
+    color: Colors.secondary,
   },
-
-  // Progress Section
   progressSection: {
     gap: 6,
   },
   progressBarTrack: {
-    height: 8,
+    height: 6,
     backgroundColor: Colors.surfaceContainer,
-    borderRadius: 4,
+    borderRadius: 3,
     overflow: 'hidden',
-    padding: 1,
   },
   progressBarFill: {
     height: '100%',
@@ -615,20 +694,17 @@ const styles = StyleSheet.create({
   elapsedText: {
     fontSize: 11,
     fontWeight: '600',
-    color: Colors.onSurfaceVariant,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    color: Colors.primary,
   },
   remainingText: {
     fontSize: 11,
-    fontWeight: '600',
-    color: Colors.primary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    color: Colors.secondary,
   },
-
-  // Action Buttons
   actionsSection: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+    paddingTop: 12,
     gap: 8,
-    paddingTop: 4,
   },
   actionLabel: {
     fontSize: 10,
@@ -642,50 +718,50 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     flex: 1,
-    height: 44,
-    borderRadius: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   actionBtnSelected: {
+    borderColor: Colors.primary,
     borderWidth: 2,
-    borderColor: Colors.onSurface,
   },
   btnPresent: {
     backgroundColor: Colors.primary,
   },
   btnPresentText: {
     color: Colors.onPrimary,
-    fontWeight: '600',
-    fontSize: 13,
+    fontWeight: '700',
+    fontSize: 12,
   },
   btnAbsent: {
     backgroundColor: Colors.errorContainer,
   },
   btnAbsentText: {
     color: Colors.onErrorContainer,
-    fontWeight: '600',
-    fontSize: 13,
+    fontWeight: '700',
+    fontSize: 12,
   },
   btnCancelled: {
-    backgroundColor: Colors.surfaceContainer,
+    backgroundColor: Colors.surfaceContainerLow,
   },
   btnCancelledText: {
-    color: Colors.secondary,
-    fontWeight: '600',
-    fontSize: 13,
+    color: Colors.onSurface,
+    fontWeight: '700',
+    fontSize: 12,
   },
-
-  // 3. Next Up Card
   nextUpCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: Colors.surfaceContainerLow,
+    backgroundColor: Colors.surfaceContainerLowest,
     borderRadius: 14,
-    padding: 12,
+    padding: 14,
     borderWidth: 1,
     borderColor: Colors.divider,
   },
@@ -696,62 +772,61 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   walkIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: Colors.secondaryContainer,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.secondaryFixed,
     alignItems: 'center',
     justifyContent: 'center',
   },
   nextUpInfo: {
     flex: 1,
+    gap: 2,
   },
   nextUpLabel: {
     fontSize: 9,
-    fontWeight: '700',
-    color: Colors.secondary,
+    fontWeight: '800',
+    color: Colors.primary,
     letterSpacing: 0.5,
   },
   nextUpTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: Colors.onSurface,
-    marginTop: 1,
   },
   nextUpSub: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginTop: 2,
   },
   roomSub: {
     fontSize: 10,
-    fontWeight: '600',
-    color: Colors.onSurfaceVariant,
+    fontWeight: '700',
+    color: Colors.secondary,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   dotSub: {
     fontSize: 10,
-    color: Colors.outlineVariant,
+    color: Colors.secondary,
   },
   profSub: {
-    fontSize: 11,
+    fontSize: 10,
     color: Colors.secondary,
   },
   nextUpRight: {
     alignItems: 'flex-end',
-    gap: 4,
+    gap: 6,
   },
   inTimeBadge: {
-    backgroundColor: Colors.surfaceContainerLowest,
+    backgroundColor: Colors.tertiaryFixed,
     paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   inTimeText: {
     fontSize: 10,
-    fontWeight: '700',
-    color: Colors.onSurface,
+    fontWeight: '800',
+    color: Colors.onTertiaryFixedVariant,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   directionsBtn: {
@@ -761,13 +836,11 @@ const styles = StyleSheet.create({
   },
   directionsText: {
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
     color: Colors.primary,
   },
-
-  // 4. Carousel Section
   carouselSection: {
-    gap: 10,
+    gap: 12,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
@@ -775,10 +848,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
     color: Colors.onSurface,
-    letterSpacing: -0.2,
   },
   viewAllBtn: {
     flexDirection: 'row',
@@ -795,7 +867,7 @@ const styles = StyleSheet.create({
     paddingRight: 16,
   },
   carouselCard: {
-    width: 250,
+    width: 220,
     backgroundColor: Colors.surfaceContainerLowest,
     borderRadius: 14,
     padding: 14,
@@ -808,7 +880,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   statusPill: {
     flexDirection: 'row',
@@ -819,13 +891,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   statusPillSafe: {
-    backgroundColor: 'rgba(133, 248, 196, 0.4)',
-  },
-  statusPillCritical: {
-    backgroundColor: Colors.errorContainer,
+    backgroundColor: Colors.primaryFixed,
   },
   statusPillWarning: {
     backgroundColor: Colors.tertiaryFixed,
+  },
+  statusPillCritical: {
+    backgroundColor: Colors.errorContainer,
   },
   statusDot: {
     width: 6,
@@ -833,16 +905,17 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   statusPillText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
+    textTransform: 'uppercase',
   },
   percentageText: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '800',
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   cardCourseTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: Colors.onSurface,
   },
@@ -855,41 +928,37 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   miniBarTrack: {
-    height: 6,
+    height: 4,
     backgroundColor: Colors.surfaceContainer,
-    borderRadius: 3,
+    borderRadius: 2,
     position: 'relative',
-    overflow: 'hidden',
   },
   miniBarFill: {
     height: '100%',
-    borderRadius: 3,
+    borderRadius: 2,
   },
   targetTick: {
     position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: '75%',
+    top: -2,
+    bottom: -2,
     width: 2,
     backgroundColor: Colors.onSurface,
-    opacity: 0.4,
+    borderRadius: 1,
   },
   cardAdvicePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
     paddingHorizontal: 8,
     paddingVertical: 5,
-    borderRadius: 6,
+    borderRadius: 8,
   },
   adviceText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
   },
-
-  // 5. Peek Section
   peekSection: {
-    gap: 10,
+    gap: 12,
   },
   timelineList: {
     gap: 8,
@@ -902,13 +971,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.divider,
     gap: 12,
+    alignItems: 'center',
   },
   slotTimeCol: {
-    width: 70,
+    alignItems: 'center',
     justifyContent: 'center',
+    width: 64,
   },
   slotStartTime: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
     color: Colors.onSurface,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
@@ -916,11 +987,11 @@ const styles = StyleSheet.create({
   slotEndTime: {
     fontSize: 10,
     color: Colors.secondary,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   slotContentCol: {
     flex: 1,
-    justifyContent: 'center',
-    gap: 2,
+    gap: 3,
   },
   slotTopRow: {
     flexDirection: 'row',
@@ -932,43 +1003,65 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.onSurface,
     flex: 1,
-    marginRight: 6,
   },
-  slotStatusBadge: {
+  activeTag: {
+    backgroundColor: Colors.primaryContainer,
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 8,
+    borderRadius: 4,
   },
-  slotAttendedBadge: {
-    backgroundColor: 'rgba(133, 248, 196, 0.3)',
-  },
-  slotActiveBadge: {
-    backgroundColor: Colors.surfaceContainerHigh,
-  },
-  slotUpcomingBadge: {
-    backgroundColor: Colors.surfaceContainerLow,
-  },
-  slotStatusText: {
+  activeTagText: {
     fontSize: 9,
     fontWeight: '700',
+    color: Colors.onPrimaryContainer,
   },
-  slotMetaRow: {
+  endedTag: {
+    backgroundColor: Colors.surfaceContainer,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  endedTagText: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: Colors.secondary,
+  },
+  attendedTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 2,
+    backgroundColor: Colors.primaryFixed,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
-  slotRoom: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: Colors.onSurfaceVariant,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  attendedTagText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: Colors.onPrimaryFixedVariant,
   },
-  slotDot: {
-    fontSize: 10,
-    color: Colors.outlineVariant,
+  upcomingTag: {
+    backgroundColor: Colors.surfaceContainerLow,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
-  slotProf: {
+  upcomingTagText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: Colors.secondary,
+  },
+  slotBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  slotSubText: {
     fontSize: 11,
+    color: Colors.secondary,
+  },
+  slotLocationText: {
+    fontSize: 10,
     color: Colors.secondary,
   },
 });

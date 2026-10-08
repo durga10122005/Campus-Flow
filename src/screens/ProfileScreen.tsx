@@ -9,14 +9,23 @@ import {
   Modal,
   TextInput,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useApp } from '../context/AppContext';
+import { generateAttendancePDF } from '../services/pdfService';
+import { syncTimetableToDeviceCalendar } from '../services/calendarService';
+import {
+  scheduleDailyMorningBrief,
+  cancelNotificationsByTag,
+} from '../services/notificationService';
 
 export const ProfileScreen: React.FC = () => {
   const {
     profile,
+    courses,
+    timetable,
     holidays,
     updateTargetRule,
     updateProfile,
@@ -28,6 +37,8 @@ export const ProfileScreen: React.FC = () => {
   const [criticalAlertsEnabled, setCriticalAlertsEnabled] = useState(true);
   const [directionsPromptEnabled, setDirectionsPromptEnabled] = useState(true);
   const [editProfileModalVisible, setEditProfileModalVisible] = useState(false);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
 
   // Edit profile form state
   const [formName, setFormName] = useState(profile.name);
@@ -52,6 +63,141 @@ export const ProfileScreen: React.FC = () => {
       cgpa: !isNaN(cgpaVal) ? cgpaVal : profile.cgpa,
     });
     setEditProfileModalVisible(false);
+    showToast('Profile updated successfully', 'success');
+  };
+
+  const handleToggleMorningBrief = async (val: boolean) => {
+    setMorningBriefEnabled(val);
+    if (val) {
+      await scheduleDailyMorningBrief(8, 0);
+      showToast('Daily 8:00 AM Morning Brief scheduled', 'success');
+    } else {
+      await cancelNotificationsByTag('morning-brief');
+      showToast('Morning brief notifications disabled', 'info');
+    }
+  };
+
+  const handleToggleCriticalAlerts = async (val: boolean) => {
+    setCriticalAlertsEnabled(val);
+    if (val) {
+      showToast(`Critical shortage alerts enabled (<${profile.targetRule}%)`, 'success');
+    } else {
+      await cancelNotificationsByTag('shortage-alert');
+      showToast('Shortage alerts disabled', 'info');
+    }
+  };
+
+  const handleToggleDirections = (val: boolean) => {
+    setDirectionsPromptEnabled(val);
+    if (val) {
+      showToast('15-min walk route alerts enabled', 'success');
+    } else {
+      showToast('Walk route alerts disabled', 'info');
+    }
+  };
+
+  const handleExportAttendancePDF = async () => {
+    try {
+      setIsExportingPDF(true);
+
+      const targetRule = profile.targetRule;
+      const subjectsFormatted = courses.map(c => {
+        const pct = c.total > 0 ? (c.attended / c.total) * 100 : 100;
+        const targetDec = targetRule / 100;
+        let safeBunks = 0;
+
+        if (pct >= targetRule) {
+          safeBunks = Math.floor((c.attended - targetDec * c.total) / targetDec);
+        } else {
+          safeBunks = -Math.ceil((targetDec * c.total - c.attended) / (1 - targetDec));
+        }
+
+        let status: 'Safe' | 'Warning' | 'Critical' = 'Safe';
+        if (pct < targetRule) {
+          status = 'Critical';
+        } else if (pct < targetRule + 5) {
+          status = 'Warning';
+        }
+
+        return {
+          code: c.code,
+          name: c.title,
+          attended: c.attended,
+          total: c.total,
+          percentage: pct,
+          safeBunks,
+          status,
+        };
+      });
+
+      const success = await generateAttendancePDF({
+        studentName: profile.name,
+        rollNumber: profile.rollNo,
+        semester: profile.semester,
+        branch: profile.branch,
+        collegeName: profile.college,
+        cgpa: String(profile.cgpa),
+        targetRule: profile.targetRule,
+        overallAttendancePct: parseFloat(overallPct),
+        totalAttended: profile.totalAttended,
+        totalHeld: profile.totalHeld,
+        subjects: subjectsFormatted,
+      });
+
+      if (success) {
+        showToast('Official Attendance PDF ready!', 'success');
+      } else {
+        showToast('Could not generate PDF', 'error');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('PDF Export Error', 'error');
+    } finally {
+      setIsExportingPDF(false);
+    }
+  };
+
+  const handleSyncTimetableToCalendar = async () => {
+    try {
+      setIsSyncingCalendar(true);
+
+      // Group timetable slots by weekday
+      const weekdays: ('MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT')[] = [
+        'MON',
+        'TUE',
+        'WED',
+        'THU',
+        'FRI',
+        'SAT',
+      ];
+      const daysData = weekdays.map(day => {
+        const slotsForDay = timetable.filter(t => t.day === day);
+        return {
+          day,
+          slots: slotsForDay.map(s => ({
+            name: s.courseTitle,
+            code: s.courseCode,
+            room: s.room,
+            wing: s.location,
+            professor: s.professor,
+            isLab: s.isLab,
+            time: `${s.startTime} - ${s.endTime}`,
+          })),
+        };
+      });
+
+      const res = await syncTimetableToDeviceCalendar(daysData as any);
+      if (res.success) {
+        showToast(res.message, 'success');
+      } else {
+        showToast(res.message, 'warning');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('Calendar synchronization failed', 'error');
+    } finally {
+      setIsSyncingCalendar(false);
+    }
   };
 
   return (
@@ -199,7 +345,7 @@ export const ProfileScreen: React.FC = () => {
           </View>
           <Switch
             value={morningBriefEnabled}
-            onValueChange={setMorningBriefEnabled}
+            onValueChange={handleToggleMorningBrief}
             trackColor={{ false: Colors.surfaceContainer, true: Colors.primaryContainer }}
             thumbColor={morningBriefEnabled ? Colors.primary : Colors.secondary}
           />
@@ -214,7 +360,7 @@ export const ProfileScreen: React.FC = () => {
           </View>
           <Switch
             value={criticalAlertsEnabled}
-            onValueChange={setCriticalAlertsEnabled}
+            onValueChange={handleToggleCriticalAlerts}
             trackColor={{ false: Colors.surfaceContainer, true: Colors.primaryContainer }}
             thumbColor={criticalAlertsEnabled ? Colors.primary : Colors.secondary}
           />
@@ -229,7 +375,7 @@ export const ProfileScreen: React.FC = () => {
           </View>
           <Switch
             value={directionsPromptEnabled}
-            onValueChange={setDirectionsPromptEnabled}
+            onValueChange={handleToggleDirections}
             trackColor={{ false: Colors.surfaceContainer, true: Colors.primaryContainer }}
             thumbColor={directionsPromptEnabled ? Colors.primary : Colors.secondary}
           />
@@ -247,7 +393,8 @@ export const ProfileScreen: React.FC = () => {
 
         <TouchableOpacity
           style={styles.actionRowBtn}
-          onPress={() => showToast('Attendance summary exported as PDF', 'success')}
+          onPress={handleExportAttendancePDF}
+          disabled={isExportingPDF}
           activeOpacity={0.7}
         >
           <View style={styles.actionRowLeft}>
@@ -257,14 +404,19 @@ export const ProfileScreen: React.FC = () => {
               <Text style={styles.actionRowSub}>Signed statement for institutional verification</Text>
             </View>
           </View>
-          <MaterialIcons name="chevron-right" size={20} color={Colors.secondary} />
+          {isExportingPDF ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <MaterialIcons name="chevron-right" size={20} color={Colors.secondary} />
+          )}
         </TouchableOpacity>
 
         <View style={styles.prefDivider} />
 
         <TouchableOpacity
           style={styles.actionRowBtn}
-          onPress={() => showToast('Weekly timetable synced with local Calendar (ICS)', 'success')}
+          onPress={handleSyncTimetableToCalendar}
+          disabled={isSyncingCalendar}
           activeOpacity={0.7}
         >
           <View style={styles.actionRowLeft}>
@@ -274,7 +426,11 @@ export const ProfileScreen: React.FC = () => {
               <Text style={styles.actionRowSub}>Apple Calendar & Google Calendar integration</Text>
             </View>
           </View>
-          <MaterialIcons name="chevron-right" size={20} color={Colors.secondary} />
+          {isSyncingCalendar ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <MaterialIcons name="chevron-right" size={20} color={Colors.secondary} />
+          )}
         </TouchableOpacity>
 
         <View style={styles.prefDivider} />

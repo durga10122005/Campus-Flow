@@ -9,25 +9,23 @@ import {
   TextInput,
   Switch,
   Platform,
+  DimensionValue,
 } from 'react-native';
 import { MaterialIcons, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useApp } from '../context/AppContext';
 import { Weekday, TimetableSlot } from '../data/mockData';
+import {
+  useRealtimeClock,
+  getSlotRealtimeStatus,
+  formatMinutesToDisplay,
+  parseTimeToMinutes,
+} from '../utils/timeUtils';
 
 interface DayItem {
   day: Weekday;
   date: string;
 }
-
-const DAYS: DayItem[] = [
-  { day: 'MON', date: '28' },
-  { day: 'TUE', date: '29' },
-  { day: 'WED', date: '30' },
-  { day: 'THU', date: '01' },
-  { day: 'FRI', date: '02' },
-  { day: 'SAT', date: '03' },
-];
 
 export const TimetableScreen: React.FC = () => {
   const {
@@ -42,8 +40,27 @@ export const TimetableScreen: React.FC = () => {
     showToast,
   } = useApp();
 
-  const [selectedDay, setSelectedDay] = useState<Weekday>('FRI');
+  // 1. Real-time Clock
+  const { currentMinutes, currentWeekday, formattedTime, formattedDate } = useRealtimeClock(5000);
+
+  const [selectedDay, setSelectedDay] = useState<Weekday>(
+    currentWeekday === ('SUN' as any) ? 'MON' : currentWeekday
+  );
   const [viewMode, setViewMode] = useState<'day' | 'week'>('day');
+
+  // Compute dynamic dates for current week
+  const now = new Date();
+  const currentDayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon...
+  const DAYS: DayItem[] = (['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as Weekday[]).map((day, idx) => {
+    const targetDayIndex = idx + 1; // 1 to 6
+    const diff = targetDayIndex - (currentDayOfWeek === 0 ? 7 : currentDayOfWeek);
+    const d = new Date(now);
+    d.setDate(now.getDate() + diff);
+    return {
+      day,
+      date: String(d.getDate()).padStart(2, '0'),
+    };
+  });
 
   // Modals state
   const [addClassModalVisible, setAddClassModalVisible] = useState(false);
@@ -107,10 +124,13 @@ export const TimetableScreen: React.FC = () => {
       labMultiplier: editIsLab ? 2 : undefined,
     });
     setEditClassModalVisible(false);
+    showToast('Class updated successfully', 'success');
   };
 
-  // Filter slots for the selected day
-  const daySlots = timetable.filter(s => s.day === selectedDay);
+  // Filter slots for the selected day, sorted by start time
+  const daySlots = timetable
+    .filter(s => s.day === selectedDay)
+    .sort((a, b) => parseTimeToMinutes(a.startTime) - parseTimeToMinutes(b.startTime));
   const dayHoliday = holidays.find(h => h.day === selectedDay);
 
   const handleSaveClass = () => {
@@ -141,6 +161,7 @@ export const TimetableScreen: React.FC = () => {
     setFormRoom('');
     setFormLocation('');
     setAddClassModalVisible(false);
+    showToast('Class added to timetable', 'success');
   };
 
   const handleSaveHoliday = () => {
@@ -160,7 +181,10 @@ export const TimetableScreen: React.FC = () => {
     setHolidayTitle('');
     setHolidayNotes('');
     setAddHolidayModalVisible(false);
+    showToast('Holiday added', 'success');
   };
+
+  const isToday = selectedDay === currentWeekday;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} showsVerticalScrollIndicator={false}>
@@ -169,11 +193,16 @@ export const TimetableScreen: React.FC = () => {
         <View>
           <View style={styles.titleWithBadge}>
             <Text style={styles.screenTitle}>Class Timetable</Text>
-            <View style={styles.termBadge}>
-              <Text style={styles.termBadgeText}>Fall 2024</Text>
-            </View>
+            {isToday && (
+              <View style={styles.todayIndicatorBadge}>
+                <View style={styles.greenDot} />
+                <Text style={styles.todayIndicatorText}>TODAY • {formattedTime}</Text>
+              </View>
+            )}
           </View>
-          <Text style={styles.semesterSub}>Odd Semester • Week 07</Text>
+          <Text style={styles.semesterSub}>
+            {formattedDate} • {daySlots.length} Classes
+          </Text>
         </View>
 
         <View style={styles.headerButtons}>
@@ -199,6 +228,7 @@ export const TimetableScreen: React.FC = () => {
       >
         {DAYS.map(item => {
           const isSelected = selectedDay === item.day;
+          const isItemToday = currentWeekday === item.day;
           const count = timetable.filter(s => s.day === item.day).length;
           const isHol = holidays.some(h => h.day === item.day);
 
@@ -208,6 +238,7 @@ export const TimetableScreen: React.FC = () => {
               style={[
                 styles.dayCard,
                 isSelected ? styles.dayCardActive : styles.dayCardInactive,
+                isItemToday && !isSelected && styles.dayCardTodayOutline,
               ]}
               onPress={() => setSelectedDay(item.day)}
               activeOpacity={0.8}
@@ -221,7 +252,7 @@ export const TimetableScreen: React.FC = () => {
                 >
                   {item.day}
                 </Text>
-                {isSelected && <View style={styles.activeDayDot} />}
+                {isItemToday && <View style={styles.todayMarkerDot} />}
               </View>
               <Text
                 style={[
@@ -287,6 +318,7 @@ export const TimetableScreen: React.FC = () => {
             <MaterialCommunityIcons name="coffee-outline" size={16} color={Colors.primary} />
             <Text style={styles.freeWindowMiniText}>
               {daySlots.length} classes scheduled for {selectedDay}
+              {isToday ? ' (Active Day)' : ''}
             </Text>
           </View>
           <TouchableOpacity
@@ -300,7 +332,7 @@ export const TimetableScreen: React.FC = () => {
         </View>
       )}
 
-      {/* 4. Timeline Schedule Cards for Selected Day */}
+      {/* 4. Timeline Schedule Cards with Real-time Live Status */}
       <View style={styles.scheduleList}>
         {daySlots.length === 0 ? (
           <View style={styles.emptyDayBox}>
@@ -322,24 +354,52 @@ export const TimetableScreen: React.FC = () => {
           </View>
         ) : (
           daySlots.map(slot => {
-            const isActive = slot.status === 'active';
+            const statusInfo = isToday
+              ? getSlotRealtimeStatus(slot, selectedDay, currentMinutes)
+              : null;
+            const isActive = isToday && statusInfo?.state === 'active';
+            const isEnded = isToday && statusInfo?.state === 'ended';
+            const isUpcoming = isToday && statusInfo?.state === 'upcoming';
             const isAttended = slot.status === 'attended';
 
             return (
               <View
                 key={slot.id}
-                style={[styles.classCard, isActive && styles.classCardActiveNow]}
+                style={[
+                  styles.classCard,
+                  isActive && styles.classCardActiveNow,
+                  isEnded && styles.classCardEnded,
+                ]}
               >
                 {isActive && <View style={styles.activeSideStripe} />}
 
                 <View style={styles.classHeader}>
                   <View style={styles.timeTag}>
-                    <Text style={styles.timeText}>{slot.startTime} – {slot.endTime}</Text>
-                    {isActive ? (
-                      <View style={styles.liveNowTag}>
-                        <View style={styles.livePulse} />
-                        <Text style={styles.liveNowText}>Active Now</Text>
-                      </View>
+                    <Text style={[styles.timeText, isActive && { color: Colors.primary, fontWeight: '800' }]}>
+                      {slot.startTime} – {slot.endTime}
+                    </Text>
+
+                    {/* Real-time Status Badge */}
+                    {isToday ? (
+                      isActive ? (
+                        <View style={styles.liveNowTag}>
+                          <View style={styles.livePulse} />
+                          <Text style={styles.liveNowText}>
+                            LIVE • {statusInfo?.progressPercent.toFixed(0)}%
+                          </Text>
+                        </View>
+                      ) : isEnded ? (
+                        <View style={styles.endedTag}>
+                          <MaterialIcons name="check" size={11} color={Colors.secondary} />
+                          <Text style={styles.endedTagText}>Ended</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.upcomingTag}>
+                          <Text style={styles.upcomingTagText}>
+                            in {formatMinutesToDisplay(statusInfo?.startsInMinutes || 0)}
+                          </Text>
+                        </View>
+                      )
                     ) : (
                       <Text style={styles.durationText}>{slot.durationMinutes} min</Text>
                     )}
@@ -353,10 +413,16 @@ export const TimetableScreen: React.FC = () => {
                       </View>
                     )}
                     <TouchableOpacity
-                      onPress={() => deleteTimetableSlot(slot.id)}
-                      style={styles.deleteSlotBtn}
+                      onPress={() => openEditClassModal(slot)}
+                      style={styles.actionIconBtn}
                     >
-                      <MaterialIcons name="delete-outline" size={16} color={Colors.secondary} />
+                      <MaterialIcons name="edit" size={15} color={Colors.secondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => deleteTimetableSlot(slot.id)}
+                      style={styles.actionIconBtn}
+                    >
+                      <MaterialIcons name="delete-outline" size={15} color={Colors.secondary} />
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -383,14 +449,20 @@ export const TimetableScreen: React.FC = () => {
                   </View>
                 </View>
 
-                {isActive && (
+                {/* Real-time Dynamic Progress Bar for active class */}
+                {isActive && statusInfo && (
                   <View style={styles.activeProgressRow}>
                     <View style={styles.activeBarTrack}>
-                      <View style={[styles.activeBarFill, { width: '64%' }]} />
+                      <View
+                        style={[
+                          styles.activeBarFill,
+                          { width: `${statusInfo.progressPercent.toFixed(1)}%` as DimensionValue },
+                        ]}
+                      />
                     </View>
                     <View style={styles.activeProgressLabels}>
-                      <Text style={styles.progressSubtext}>Started {slot.startTime}</Text>
-                      <Text style={styles.progressRemaining}>32m remaining</Text>
+                      <Text style={styles.progressSubtext}>{statusInfo.elapsedMinutes}m elapsed</Text>
+                      <Text style={styles.progressRemaining}>{statusInfo.remainingMinutes}m remaining</Text>
                     </View>
                   </View>
                 )}
@@ -455,51 +527,51 @@ export const TimetableScreen: React.FC = () => {
                   <Text style={styles.formLabel}>Course Code</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="CS-501"
+                    placeholder="e.g. CS 504"
                     value={formCourseCode}
                     onChangeText={setFormCourseCode}
                   />
                 </View>
-                <View style={[styles.formGroup, { flex: 1.2 }]}>
-                  <Text style={styles.formLabel}>Professor / Instructor</Text>
+                <View style={[styles.formGroup, { flex: 1.5 }]}>
+                  <Text style={styles.formLabel}>Professor Name</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="Prof. Jenkins"
+                    placeholder="e.g. Dr. A. Vance"
                     value={formProfessor}
                     onChangeText={setFormProfessor}
                   />
                 </View>
               </View>
 
-              {/* Room & Building Wing */}
+              {/* Room & Wing Location */}
               <View style={styles.formRow}>
                 <View style={[styles.formGroup, { flex: 1 }]}>
-                  <Text style={styles.formLabel}>Room / Hall</Text>
+                  <Text style={styles.formLabel}>Room / Lab Code</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="LAB 402"
+                    placeholder="e.g. LAB 402"
                     value={formRoom}
                     onChangeText={setFormRoom}
                   />
                 </View>
-                <View style={[styles.formGroup, { flex: 1.2 }]}>
-                  <Text style={styles.formLabel}>Location / Floor</Text>
+                <View style={[styles.formGroup, { flex: 1.5 }]}>
+                  <Text style={styles.formLabel}>Wing & Floor</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="Tech Block • 4F"
+                    placeholder="e.g. Tech Block • 4F"
                     value={formLocation}
                     onChangeText={setFormLocation}
                   />
                 </View>
               </View>
 
-              {/* Time Slots */}
+              {/* Start & End Times */}
               <View style={styles.formRow}>
                 <View style={[styles.formGroup, { flex: 1 }]}>
                   <Text style={styles.formLabel}>Start Time</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="10:15 AM"
+                    placeholder="09:00 AM"
                     value={formStartTime}
                     onChangeText={setFormStartTime}
                   />
@@ -508,18 +580,18 @@ export const TimetableScreen: React.FC = () => {
                   <Text style={styles.formLabel}>End Time</Text>
                   <TextInput
                     style={styles.formInput}
-                    placeholder="11:45 AM"
+                    placeholder="10:30 AM"
                     value={formEndTime}
                     onChangeText={setFormEndTime}
                   />
                 </View>
               </View>
 
-              {/* Lab Credit Multiplier */}
+              {/* Lab 2x Toggle */}
               <View style={styles.switchRow}>
-                <View style={styles.switchTextCol}>
-                  <Text style={styles.switchTitle}>Practical / Lab Session (2× Credit)</Text>
-                  <Text style={styles.switchSub}>Applies practical weightage to attendance calculations.</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.switchLabel}>Practical / Lab Session (2× Weight)</Text>
+                  <Text style={styles.switchSub}>Counts as 2 lecture units for attendance</Text>
                 </View>
                 <Switch
                   value={formIsLab}
@@ -529,6 +601,7 @@ export const TimetableScreen: React.FC = () => {
                 />
               </View>
 
+              {/* Modal Buttons */}
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={styles.cancelBtn}
@@ -548,77 +621,188 @@ export const TimetableScreen: React.FC = () => {
         </View>
       </Modal>
 
-      {/* MODAL 2: Add Holiday / Off-Day */}
-      <Modal visible={addHolidayModalVisible} transparent animationType="slide">
+      {/* MODAL 2: Edit Class */}
+      <Modal visible={editClassModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Mark {selectedDay} as Holiday / Off-Day</Text>
-              <TouchableOpacity onPress={() => setAddHolidayModalVisible(false)}>
-                <MaterialIcons name="close" size={20} color={Colors.secondary} />
-              </TouchableOpacity>
-            </View>
+          <ScrollView contentContainerStyle={styles.modalScroll}>
+            <View style={styles.modalBox}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Edit Class Slot</Text>
+                <TouchableOpacity onPress={() => setEditClassModalVisible(false)}>
+                  <MaterialIcons name="close" size={22} color={Colors.secondary} />
+                </TouchableOpacity>
+              </View>
 
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Holiday / Occasion Title</Text>
-              <TextInput
-                style={styles.formInput}
-                placeholder="e.g. Founder's Day / College Fest"
-                value={holidayTitle}
-                onChangeText={setHolidayTitle}
-              />
-            </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Course Name</Text>
+                <TextInput
+                  style={styles.formInput}
+                  value={editCourseTitle}
+                  onChangeText={setEditCourseTitle}
+                />
+              </View>
 
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Category</Text>
-              <View style={styles.holidayTypeRow}>
-                {(['Public', 'Institutional', 'Fest', 'Exam Preparation'] as const).map(type => (
-                  <TouchableOpacity
-                    key={type}
-                    style={[
-                      styles.typeChip,
-                      holidayType === type && styles.typeChipActive,
-                    ]}
-                    onPress={() => setHolidayType(type)}
-                  >
-                    <Text
-                      style={[
-                        styles.typeChipText,
-                        holidayType === type && styles.typeChipTextActive,
-                      ]}
-                    >
-                      {type}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+              <View style={styles.formRow}>
+                <View style={[styles.formGroup, { flex: 1 }]}>
+                  <Text style={styles.formLabel}>Code</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={editCourseCode}
+                    onChangeText={setEditCourseCode}
+                  />
+                </View>
+                <View style={[styles.formGroup, { flex: 1.5 }]}>
+                  <Text style={styles.formLabel}>Professor</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={editProfessor}
+                    onChangeText={setEditProfessor}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formGroup, { flex: 1 }]}>
+                  <Text style={styles.formLabel}>Room</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={editRoom}
+                    onChangeText={setEditRoom}
+                  />
+                </View>
+                <View style={[styles.formGroup, { flex: 1.5 }]}>
+                  <Text style={styles.formLabel}>Location</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={editLocation}
+                    onChangeText={setEditLocation}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formGroup, { flex: 1 }]}>
+                  <Text style={styles.formLabel}>Start</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={editStartTime}
+                    onChangeText={setEditStartTime}
+                  />
+                </View>
+                <View style={[styles.formGroup, { flex: 1 }]}>
+                  <Text style={styles.formLabel}>End</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={editEndTime}
+                    onChangeText={setEditEndTime}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.switchLabel}>Lab Multiplier (2×)</Text>
+                </View>
+                <Switch
+                  value={editIsLab}
+                  onValueChange={setEditIsLab}
+                  trackColor={{ false: Colors.surfaceContainer, true: Colors.primaryContainer }}
+                  thumbColor={editIsLab ? Colors.primary : Colors.secondary}
+                />
+              </View>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setEditClassModalVisible(false)}
+                >
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleUpdateClass}
+                >
+                  <Text style={styles.saveBtnText}>Update</Text>
+                </TouchableOpacity>
               </View>
             </View>
+          </ScrollView>
+        </View>
+      </Modal>
 
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Notes (Optional)</Text>
-              <TextInput
-                style={styles.formInput}
-                placeholder="e.g. Lectures suspended, library open"
-                value={holidayNotes}
-                onChangeText={setHolidayNotes}
-              />
-            </View>
+      {/* MODAL 3: Add Holiday */}
+      <Modal visible={addHolidayModalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <ScrollView contentContainerStyle={styles.modalScroll}>
+            <View style={styles.modalBox}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Mark {selectedDay} as Holiday</Text>
+                <TouchableOpacity onPress={() => setAddHolidayModalVisible(false)}>
+                  <MaterialIcons name="close" size={22} color={Colors.secondary} />
+                </TouchableOpacity>
+              </View>
 
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => setAddHolidayModalVisible(false)}
-              >
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.saveBtn}
-                onPress={handleSaveHoliday}
-              >
-                <Text style={styles.saveBtnText}>Confirm Holiday</Text>
-              </TouchableOpacity>
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Holiday / Event Name</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="e.g. National Science Day"
+                  value={holidayTitle}
+                  onChangeText={setHolidayTitle}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Holiday Category</Text>
+                <View style={styles.dayPickerRow}>
+                  {(['Public', 'Institutional', 'Fest', 'Exam Preparation'] as const).map(cat => (
+                    <TouchableOpacity
+                      key={cat}
+                      style={[
+                        styles.dayPickerBtn,
+                        holidayType === cat && styles.dayPickerBtnActive,
+                      ]}
+                      onPress={() => setHolidayType(cat)}
+                    >
+                      <Text
+                        style={[
+                          styles.dayPickerText,
+                          holidayType === cat && styles.dayPickerTextActive,
+                        ]}
+                      >
+                        {cat}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Notes (Optional)</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="e.g. Campus library open until 4 PM"
+                  value={holidayNotes}
+                  onChangeText={setHolidayNotes}
+                />
+              </View>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setAddHolidayModalVisible(false)}
+                >
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={handleSaveHoliday}
+                >
+                  <Text style={styles.saveBtnText}>Save Holiday</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
     </ScrollView>
@@ -637,9 +821,8 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 4,
+    alignItems: 'center',
   },
   titleWithBadge: {
     flexDirection: 'row',
@@ -648,20 +831,40 @@ const styles = StyleSheet.create({
   },
   screenTitle: {
     fontSize: 20,
-    fontWeight: '700',
+    fontWeight: '800',
     color: Colors.onSurface,
-    letterSpacing: -0.3,
+  },
+  todayIndicatorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: Colors.primaryContainer,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  greenDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.primary,
+  },
+  todayIndicatorText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: Colors.onPrimaryContainer,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   termBadge: {
-    backgroundColor: Colors.surfaceContainer,
+    backgroundColor: Colors.surfaceContainerLow,
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 12,
+    borderRadius: 6,
   },
   termBadgeText: {
     fontSize: 10,
-    fontWeight: '600',
-    color: Colors.onSurfaceVariant,
+    fontWeight: '700',
+    color: Colors.secondary,
   },
   semesterSub: {
     fontSize: 12,
@@ -670,8 +873,7 @@ const styles = StyleSheet.create({
   },
   headerButtons: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   addClassHeaderBtn: {
     flexDirection: 'row',
@@ -679,86 +881,82 @@ const styles = StyleSheet.create({
     gap: 4,
     backgroundColor: Colors.primary,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 3,
-    elevation: 2,
+    paddingVertical: 8,
+    borderRadius: 8,
   },
   addClassHeaderText: {
-    fontSize: 11,
-    fontWeight: '700',
     color: Colors.onPrimary,
+    fontWeight: '700',
+    fontSize: 12,
   },
-
-  // Days scroll
   daysScroll: {
     gap: 8,
     paddingRight: 16,
   },
   dayCard: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    width: 72,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 56,
+    gap: 4,
+    borderWidth: 1,
   },
   dayCardActive: {
-    backgroundColor: Colors.inverseSurface,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
   },
   dayCardInactive: {
-    backgroundColor: Colors.surfaceContainerLow,
+    backgroundColor: Colors.surfaceContainerLowest,
+    borderColor: Colors.divider,
+  },
+  dayCardTodayOutline: {
+    borderColor: Colors.primary,
+    borderWidth: 1.5,
   },
   dayTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
   },
   dayLabel: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
   },
   dayLabelActive: {
-    color: Colors.inversePrimary,
+    color: Colors.onPrimary,
   },
   dayLabelInactive: {
     color: Colors.secondary,
   },
-  activeDayDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.inversePrimary,
+  todayMarkerDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: Colors.primary,
   },
   dateNumber: {
     fontSize: 18,
-    fontWeight: '700',
-    marginVertical: 2,
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   dateNumberActive: {
-    color: Colors.surfaceContainerLowest,
+    color: Colors.onPrimary,
   },
   dateNumberInactive: {
     color: Colors.onSurface,
   },
   countBadge: {
     paddingHorizontal: 6,
-    paddingVertical: 1,
+    paddingVertical: 2,
     borderRadius: 8,
   },
   countBadgeActive: {
-    backgroundColor: 'rgba(211, 228, 254, 0.25)',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
   },
   countBadgeInactive: {
-    backgroundColor: Colors.surfaceContainerHighest,
+    backgroundColor: Colors.surfaceContainerLow,
   },
   countBadgeHoliday: {
     backgroundColor: Colors.tertiaryFixed,
@@ -768,49 +966,46 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   countBadgeTextActive: {
-    color: Colors.inversePrimary,
+    color: Colors.onPrimary,
   },
   countBadgeTextInactive: {
-    color: Colors.onSurfaceVariant,
+    color: Colors.secondary,
   },
   countBadgeTextHoliday: {
     color: Colors.onTertiaryFixedVariant,
   },
-
-  // Holiday Banner
   holidayBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#fffbeb',
-    borderRadius: 14,
+    backgroundColor: Colors.tertiaryFixed,
+    borderRadius: 12,
     padding: 12,
-    borderWidth: 1,
-    borderColor: '#fde68a',
+    gap: 12,
   },
   holidayIconBox: {
     width: 36,
     height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.tertiaryFixed,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceContainerLowest,
     alignItems: 'center',
     justifyContent: 'center',
   },
   holidayContent: {
     flex: 1,
+    gap: 2,
   },
   holidayTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   holidayTitle: {
     fontSize: 13,
     fontWeight: '700',
-    color: Colors.tertiary,
+    color: Colors.onTertiaryFixed,
   },
   holidayTypePill: {
-    backgroundColor: 'rgba(163, 103, 0, 0.15)',
+    backgroundColor: Colors.surfaceContainerLowest,
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: 4,
@@ -818,25 +1013,20 @@ const styles = StyleSheet.create({
   holidayTypeText: {
     fontSize: 9,
     fontWeight: '700',
-    color: Colors.tertiary,
+    color: Colors.onTertiaryFixedVariant,
   },
   holidayNotes: {
     fontSize: 11,
-    color: Colors.secondary,
-    marginTop: 2,
+    color: Colors.onTertiaryFixedVariant,
   },
   deleteHolidayBtn: {
     padding: 4,
   },
-
   holidayPromptRow: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: Colors.surfaceContainerLow,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+    alignItems: 'center',
+    paddingHorizontal: 4,
   },
   freeWindowMini: {
     flexDirection: 'row',
@@ -845,52 +1035,45 @@ const styles = StyleSheet.create({
   },
   freeWindowMiniText: {
     fontSize: 12,
-    color: Colors.onSurfaceVariant,
     fontWeight: '600',
+    color: Colors.secondary,
   },
   markHolidayBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: Colors.surfaceContainerLowest,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.divider,
+    borderRadius: 6,
+    backgroundColor: Colors.surfaceContainerLow,
   },
   markHolidayText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '600',
     color: Colors.secondary,
   },
-
-  // Schedule List
   scheduleList: {
-    gap: 12,
+    gap: 10,
   },
   emptyDayBox: {
-    alignItems: 'center',
-    justifyContent: 'center',
     backgroundColor: Colors.surfaceContainerLowest,
     borderRadius: 16,
-    padding: 24,
-    gap: 8,
+    padding: 28,
+    alignItems: 'center',
     borderWidth: 1,
     borderColor: Colors.divider,
-    borderStyle: 'dashed',
+    gap: 8,
   },
   emptyDayTitle: {
     fontSize: 15,
     fontWeight: '700',
     color: Colors.onSurface,
-    marginTop: 4,
   },
   emptyDaySub: {
     fontSize: 12,
     color: Colors.secondary,
     textAlign: 'center',
-    maxWidth: 240,
+    lineHeight: 16,
   },
   addFirstClassBtn: {
     flexDirection: 'row',
@@ -898,14 +1081,14 @@ const styles = StyleSheet.create({
     gap: 6,
     backgroundColor: Colors.primary,
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 10,
     borderRadius: 10,
     marginTop: 8,
   },
   addFirstClassBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
     color: Colors.onPrimary,
+    fontWeight: '700',
+    fontSize: 13,
   },
   classCard: {
     backgroundColor: Colors.surfaceContainerLowest,
@@ -914,40 +1097,86 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.divider,
     gap: 10,
-  },
-  classCardActiveNow: {
-    borderColor: Colors.primary,
-    elevation: 3,
     position: 'relative',
     overflow: 'hidden',
   },
+  classCardActiveNow: {
+    borderColor: Colors.primary,
+    borderWidth: 1.5,
+    backgroundColor: '#F0FDF4',
+  },
+  classCardEnded: {
+    opacity: 0.75,
+  },
   activeSideStripe: {
     position: 'absolute',
-    left: 0,
     top: 0,
+    left: 0,
     bottom: 0,
-    width: 5,
+    width: 4,
     backgroundColor: Colors.primary,
   },
   classHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
+    alignItems: 'center',
   },
   timeTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   timeText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
-    color: Colors.onSurfaceVariant,
+    color: Colors.onSurface,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  liveNowTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.primaryContainer,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  livePulse: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: Colors.primary,
+  },
+  liveNowText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: Colors.onPrimaryContainer,
+  },
+  endedTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
     backgroundColor: Colors.surfaceContainer,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
+  },
+  endedTagText: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: Colors.secondary,
+  },
+  upcomingTag: {
+    backgroundColor: Colors.surfaceContainerLow,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  upcomingTagText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: Colors.primary,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   durationText: {
     fontSize: 10,
@@ -956,72 +1185,56 @@ const styles = StyleSheet.create({
   headerRightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   attendedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(133, 248, 196, 0.4)',
-    paddingHorizontal: 8,
+    gap: 3,
+    backgroundColor: Colors.primaryFixed,
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 12,
+    borderRadius: 4,
   },
   attendedText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
-    color: Colors.primary,
+    color: Colors.onPrimaryFixedVariant,
   },
-  deleteSlotBtn: {
-    padding: 2,
-  },
-  liveNowTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  livePulse: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.primary,
-  },
-  liveNowText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.primary,
-    textTransform: 'uppercase',
+  actionIconBtn: {
+    padding: 3,
   },
   classBody: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 8,
+    alignItems: 'center',
+    gap: 12,
   },
   classMainInfo: {
     flex: 1,
+    gap: 2,
   },
   className: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: Colors.onSurface,
   },
   classSub: {
-    fontSize: 12,
+    fontSize: 11,
     color: Colors.secondary,
-    marginTop: 2,
   },
   codeMono: {
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    color: Colors.onSurfaceVariant,
+    fontWeight: '600',
   },
   roomCol: {
     alignItems: 'flex-end',
+    gap: 2,
   },
   roomBox: {
-    backgroundColor: Colors.surfaceContainer,
+    backgroundColor: Colors.surfaceContainerLow,
     paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     borderRadius: 6,
   },
   roomBoxActive: {
@@ -1034,24 +1247,25 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   wingText: {
-    fontSize: 9,
+    fontSize: 10,
     color: Colors.secondary,
-    marginTop: 2,
   },
   activeProgressRow: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+    paddingTop: 8,
     gap: 4,
-    paddingTop: 4,
   },
   activeBarTrack: {
-    height: 6,
+    height: 4,
     backgroundColor: Colors.surfaceContainer,
-    borderRadius: 3,
+    borderRadius: 2,
     overflow: 'hidden',
   },
   activeBarFill: {
     height: '100%',
     backgroundColor: Colors.primary,
-    borderRadius: 3,
+    borderRadius: 2,
   },
   activeProgressLabels: {
     flexDirection: 'row',
@@ -1059,15 +1273,13 @@ const styles = StyleSheet.create({
   },
   progressSubtext: {
     fontSize: 10,
-    color: Colors.secondary,
+    color: Colors.primary,
+    fontWeight: '600',
   },
   progressRemaining: {
     fontSize: 10,
-    fontWeight: '700',
-    color: Colors.primary,
+    color: Colors.secondary,
   },
-
-  // Modals
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -1118,13 +1330,13 @@ const styles = StyleSheet.create({
   dayPickerRow: {
     flexDirection: 'row',
     gap: 6,
+    flexWrap: 'wrap',
   },
   dayPickerBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
     backgroundColor: Colors.surfaceContainerLow,
-    alignItems: 'center',
   },
   dayPickerBtnActive: {
     backgroundColor: Colors.primary,
@@ -1141,13 +1353,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
     paddingVertical: 4,
   },
-  switchTextCol: {
-    flex: 1,
-  },
-  switchTitle: {
+  switchLabel: {
     fontSize: 12,
     fontWeight: '600',
     color: Colors.onSurface,
@@ -1155,29 +1363,6 @@ const styles = StyleSheet.create({
   switchSub: {
     fontSize: 10,
     color: Colors.secondary,
-    marginTop: 1,
-  },
-  holidayTypeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  typeChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: Colors.surfaceContainerLow,
-  },
-  typeChipActive: {
-    backgroundColor: Colors.tertiary,
-  },
-  typeChipText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: Colors.onSurfaceVariant,
-  },
-  typeChipTextActive: {
-    color: '#ffffff',
   },
   modalButtons: {
     flexDirection: 'row',

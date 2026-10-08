@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -8,6 +8,8 @@ import { Colors } from './src/theme/colors';
 import { Header } from './src/components/Header';
 import { BottomNav } from './src/components/BottomNav';
 import { Toast } from './src/components/Toast';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
+import { requestNotificationPermissions } from './src/services/notificationService';
 
 import { TodayScreen } from './src/screens/TodayScreen';
 import { TimetableScreen } from './src/screens/TimetableScreen';
@@ -17,6 +19,11 @@ import { ProfileScreen } from './src/screens/ProfileScreen';
 
 const MainNavigator: React.FC = () => {
   const { activeTab } = useApp();
+
+  useEffect(() => {
+    // Request notification permissions on app startup
+    requestNotificationPermissions().catch(() => {});
+  }, []);
 
   const renderCurrentScreen = () => {
     switch (activeTab) {
@@ -49,14 +56,16 @@ const MainNavigator: React.FC = () => {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-        <StatusBar style="dark" />
-        <AppProvider>
-          <MainNavigator />
-        </AppProvider>
-      </SafeAreaView>
-    </SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+          <StatusBar style="dark" />
+          <AppProvider>
+            <MainNavigator />
+          </AppProvider>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
 

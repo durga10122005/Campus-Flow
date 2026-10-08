@@ -1,6 +1,6 @@
 # CampusFlow - Academic & Attendance Companion 📱
 
-CampusFlow is a mobile application built with **React Native & Expo**, engineered according to your **Google Stitch** design project: [CampusFlow Attendance Dashboard](https://stitch.withgoogle.com/projects/9241095504497739707).
+CampusFlow is a production-engineered mobile application built with **React Native & Expo**, designed around the *Functional Academic Precision* aesthetic (inspired by your [CampusFlow Attendance Dashboard](https://stitch.withgoogle.com/projects/9241095504497739707) Google Stitch project).
 
 ---
 
@@ -13,7 +13,7 @@ CampusFlow is a mobile application built with **React Native & Expo**, engineere
 
 ---
 
-## 📱 Included Screens & Features
+## 📱 Included Screens & Native Features
 
 ### 1. 📅 Today (Live Overview)
 - **Morning Brief Banner**: 8:00 AM daily risk summary with single-tap dismissal.
@@ -28,7 +28,7 @@ CampusFlow is a mobile application built with **React Native & Expo**, engineere
 
 ### 2. 🗓️ Timetable (Class Schedule)
 - **Day / Week View Toggle**.
-- **Interactive Horizontal Weekday Selector** (`MON 28` to `SAT 03`) with active class counts.
+- **Interactive Horizontal Weekday Selector** (`MON` to `SAT`) with active class counts.
 - **Free Window Detection Banner**: Highlights study/lunch windows (e.g. `1h 15m` free window for Central Library).
 - **Detailed Timeline Slots**: Room codes, wing locations, professors, lab multipliers, and active live indicators.
 
@@ -49,11 +49,13 @@ CampusFlow is a mobile application built with **React Native & Expo**, engineere
 - **Status Toggle**: One-tap toggle between `Submitted` and `Pending`.
 - **New Task Modal**: Interactive form to add custom assignments, rubrics, weightages, and due dates.
 
-### 5. 👤 Profile & Institutional Settings
+### 5. 👤 Profile & Native Academic Actions
 - **Student ID Card**: Name (`Durga Prasad`), Roll No (`22CS084`), Semester 5 CS, CGPA (`8.74`), Overall attendance (`81.4%`).
 - **Customizable Attendance Policy**: Toggle the university threshold between `70%`, `75%`, `80%`, and `85%`.
-- **Smart Notification Switches**: Morning briefs, critical shortage alerts, and walking route prompts.
-- **Academic Export Actions**: Export attendance certificate PDF, sync timetable to Calendar (ICS), and University ERP sync.
+- **📄 Real Native PDF Export**: Generates cryptographically verifiable attendance certificates using `expo-print` & `expo-sharing` with subject-wise breakdown tables and institutional dean signature sections.
+- **🗓️ Real Native Calendar Sync**: Synchronizes weekly class schedules into Apple Calendar & Google Calendar using `expo-calendar` with 15-minute advance alarms.
+- **🔔 Native Local Notifications**: Schedules 8:00 AM daily briefs, class walk route notifications, and shortage warnings using `expo-notifications`.
+- **🛡️ Crash Resilience**: Global React Native `ErrorBoundary` with instant recovery mechanisms.
 
 ---
 
@@ -63,21 +65,20 @@ CampusFlow is a mobile application built with **React Native & Expo**, engineere
 1. Install the **Expo Go** app from the App Store (iOS) or Google Play Store (Android).
 2. Start the development server:
    ```bash
-   npm run start
+   npm start
    ```
 3. Scan the QR code displayed in the terminal with your phone camera (iOS) or inside the Expo Go app (Android).
 
 ### Option B: Run in Web Browser
-To preview the mobile layout in your desktop or mobile browser:
 ```bash
 npm run web
 ```
 
-### Option C: Run in Android / iOS Emulator
+### Option C: Production Builds with EAS
 ```bash
-# Android Studio Emulator
-npm run android
+# Build standalone Android APK (Preview)
+npx eas-cli build -p android --profile preview
 
-# macOS Xcode iOS Simulator
-npm run ios
+# Build for App Store / Play Store
+npx eas-cli build -p all --profile production
 ```

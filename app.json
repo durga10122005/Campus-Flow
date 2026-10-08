@@ -10,22 +10,46 @@
       "backgroundColor": "#006948"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.durga.campusflow",
+      "infoPlist": {
+        "NSCalendarsUsageDescription": "CampusFlow needs calendar access to export and sync your class timetable."
+      }
     },
     "android": {
+      "package": "com.durga.campusflow",
       "adaptiveIcon": {
         "backgroundColor": "#006948",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "permissions": [
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "NOTIFICATIONS"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      "expo-sharing",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#006948"
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "CampusFlow needs calendar access to sync your academic schedule."
+        }
+      ]
     ]
   }
 }
