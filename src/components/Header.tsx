@@ -3,16 +3,27 @@ import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 import { Colors } from '../theme/colors';
 import { useApp } from '../context/AppContext';
+import { useRealtimeClock } from '../utils/timeUtils';
 
 export const Header: React.FC = () => {
-  const { setActiveTab, showToast } = useApp();
+  const { profile, setActiveTab, showToast } = useApp();
+  const { now } = useRealtimeClock(10000);
+
+  // Dynamically formatted date e.g. "THU, OCT 8"
+  const formattedHeaderDate = now
+    .toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    })
+    .toUpperCase();
 
   return (
     <View style={styles.container}>
       {/* Top Bar info */}
       <View style={styles.topRow}>
         <View>
-          <Text style={styles.dateText}>FRI, OCT 2</Text>
+          <Text style={styles.dateText}>{formattedHeaderDate}</Text>
           <View style={styles.titleRow}>
             <Text style={styles.appTitle}>CampusFlow</Text>
             <View style={styles.greenDot} />
@@ -23,7 +34,9 @@ export const Header: React.FC = () => {
           {/* Semester Pill */}
           <View style={styles.semesterPill}>
             <View style={styles.innerPip} />
-            <Text style={styles.semesterText}>Sem 5 • CS</Text>
+            <Text style={styles.semesterText}>
+              {profile.semester} • {profile.branch.split(' ')[0] || 'CS'}
+            </Text>
           </View>
 
           {/* Notifications Button */}
@@ -98,10 +111,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: Colors.surfaceContainer,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
+    backgroundColor: Colors.surfaceContainerLow,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   innerPip: {
     width: 6,
@@ -111,7 +124,7 @@ const styles = StyleSheet.create({
   },
   semesterText: {
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
     color: Colors.onSurfaceVariant,
   },
   iconButton: {
@@ -125,19 +138,17 @@ const styles = StyleSheet.create({
   },
   badgeDot: {
     position: 'absolute',
-    top: 7,
+    top: 8,
     right: 8,
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: Colors.error,
-    borderWidth: 1.5,
-    borderColor: Colors.surface,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.tertiary,
   },
   avatarButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
